@@ -1,10 +1,10 @@
 import os, requests, datetime as dt
 
-LINE_TOKEN  = os.environ["LINE_TOKEN"]
-LINE_TO     = os.environ["LINE_TO"]
-TWELVE_KEY  = os.environ["TWELVEDATA_KEY"]
-FINNHUB_KEY = os.environ["FINNHUB_KEY"]
-
+LINE_TOKEN   = os.environ["LINE_TOKEN"]
+LINE_TO      = os.environ["LINE_TO"]
+TWELVE_KEY   = os.environ["TWELVEDATA_KEY"]
+FINNHUB_KEY  = os.environ["FINNHUB_KEY"]
+STATE_FILE   = "last_signal.txt"
 NEG_WORDS = ["war", "conflict", "crisis", "rate hike", "inflation surge", "recession", "sanction"]
 POS_WORDS = ["rate cut", "stimulus", "safe haven", "dovish", "ceasefire", "easing"]
 
