@@ -122,7 +122,13 @@ def save_last(sig):
     open(STATE_FILE, "w").write(sig)
 
 
+def is_paused():
+    return os.path.exists("paused.txt") and open("paused.txt").read().strip() == "true"
+
+
 def main():
+    if is_paused():
+        return
     tfs = {"15m": "15min", "30m": "30min", "1h": "1h", "4h": "4h", "1d": "1day"}
     tf_signals, price, a = {}, 0, 0
     for label, interval in tfs.items():
