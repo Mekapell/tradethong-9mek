@@ -11,6 +11,7 @@ LOG_FILE        = "signal_log.csv"
 NEWS_CACHE      = "news_cache.json"
 DXY_CACHE       = "dxy_cache.json"
 CACHE_MINUTES   = 60
+SHARP_THRESHOLD = 15  # ขนาดการกลับตัวขั้นต่ำ (0-100 scale) ถึงจะนับว่า "แหลม"
 
 NEG_WORDS = ["war", "conflict", "crisis", "rate hike", "inflation surge", "recession",
              "sanction", "hawkish", "strong dollar", "yields rise", "geopolitical tension"]
@@ -41,34 +42,45 @@ def get_series(interval, size=100):
 
 
 def sma(vals, n):
-    return sum(vals[-n:]) / n
+    return [sum(vals[i - n + 1:i + 1]) / n for i in range(n - 1, len(vals))]
 
 
-def rsi(closes, n=14):
-    gains, losses = [], []
-    for i in range(1, n + 1):
-        diff = closes[-i] - closes[-i - 1]
-        gains.append(max(diff, 0))
-        losses.append(max(-diff, 0))
-    avg_gain, avg_loss = sum(gains) / n, sum(losses) / n
-    if avg_loss == 0:
-        return 100
-    rs = avg_gain / avg_loss
-    return 100 - (100 / (1 + rs))
+def stochastic(closes, highs, lows, period=5, smooth_k=3, smooth_d=3):
+    raw_k = []
+    for i in range(period - 1, len(closes)):
+        window_high = max(highs[i - period + 1:i + 1])
+        window_low = min(lows[i - period + 1:i + 1])
+        if window_high == window_low:
+            raw_k.append(50)
+        else:
+            raw_k.append((closes[i] - window_low) / (window_high - window_low) * 100)
+    slow_k = sma(raw_k, smooth_k)
+    d = sma(slow_k, smooth_d)
+    # ตัด slow_k ให้ยาวเท่า d เพื่อจับคู่ index ท้ายๆตรงกัน
+    slow_k = slow_k[-len(d):]
+    return slow_k, d
 
 
-def ema(vals, n):
-    k = 2 / (n + 1)
-    e = vals[0]
-    for v in vals[1:]:
-        e = v * k + e * (1 - k)
-    return e
+def detect_turn(k, d):
+    if len(k) < 3 or len(d) < 2:
+        return "WAIT"
 
+    diff1 = k[-2] - k[-3]
+    diff2 = k[-1] - k[-2]
 
-def macd(closes):
-    ema12 = ema(closes[-40:], 12)
-    ema26 = ema(closes[-40:], 26)
-    return ema12 - ema26
+    # จุดหักแหลมจริง (V-shape แรงพอทั้ง 2 ข้าง)
+    if diff1 < 0 and diff2 > 0 and abs(diff1) >= SHARP_THRESHOLD and abs(diff2) >= SHARP_THRESHOLD:
+        return "BUY_CONFIRMED" if d[-1] > d[-2] else "BUY_STARTING"
+    if diff1 > 0 and diff2 < 0 and abs(diff1) >= SHARP_THRESHOLD and abs(diff2) >= SHARP_THRESHOLD:
+        return "SELL_CONFIRMED" if d[-1] < d[-2] else "SELL_STARTING"
+
+    # เริ่มหัก แต่ยังไม่แหลมพอ
+    if diff1 <= 0 and diff2 > 0:
+        return "BUY_STARTING"
+    if diff1 >= 0 and diff2 < 0:
+        return "SELL_STARTING"
+
+    return "WAIT"
 
 
 def atr(highs, lows, closes, n=14):
@@ -79,19 +91,11 @@ def atr(highs, lows, closes, n=14):
     return sum(trs) / n
 
 
-def tech_signal(interval):
+def tf_signal(interval):
     closes, highs, lows = get_series(interval, 100)
-    fast, slow = sma(closes, 10), sma(closes, 30)
-    r = rsi(closes)
-    m = macd(closes)
-
-    votes = 0
-    votes += 1 if fast > slow else -1 if fast < slow else 0
-    votes += 1 if r < 30 else -1 if r > 70 else 0
-    votes += 1 if m > 0 else -1 if m < 0 else 0
-
-    sig = "BUY" if votes >= 2 else "SELL" if votes <= -2 else "WAIT"
-    return sig, closes[-1], atr(highs, lows, closes)
+    k, d = stochastic(closes, highs, lows)
+    turn = detect_turn(k, d)
+    return turn, closes[-1], atr(highs, lows, closes), k[-1]
 
 
 def load_cache(path):
@@ -112,7 +116,6 @@ def news_signal():
     cached = load_cache(NEWS_CACHE)
     if cached is not None:
         return cached
-
     news = requests.get(
         "https://finnhub.io/api/v1/news",
         params={"category": "forex", "token": FINNHUB_KEY},
@@ -123,49 +126,6 @@ def news_signal():
     result = "BUY" if score >= 2 else "SELL" if score <= -2 else "WAIT"
     save_cache(NEWS_CACHE, result)
     return result
-
-
-def combine(tf_signals, news):
-    votes = list(tf_signals.values()) + [news, news]  # news นับ 2 เท่า
-    if votes.count("BUY") >= 4:
-        return "BUY"
-    if votes.count("SELL") >= 4:
-        return "SELL"
-    return "WAIT"
-
-
-def load_last():
-    if os.path.exists(STATE_FILE):
-        return open(STATE_FILE).read().strip()
-    return ""
-
-
-def save_last(sig):
-    open(STATE_FILE, "w").write(sig)
-
-
-def calc_lot(entry, sl):
-    risk_dollar = ACCOUNT_BALANCE * (RISK_PERCENT / 100)
-    distance = abs(entry - sl)
-    if distance == 0:
-        return 0
-    # XAU/USD: 1 lot = 100 oz, $1 เคลื่อนไหว = $100 ต่อ lot
-    lot = risk_dollar / (distance * 100)
-    return round(lot, 2)
-
-
-def log_signal(now, final, price, tp, sl, lot):
-    is_new = not os.path.exists(LOG_FILE)
-    with open(LOG_FILE, "a") as f:
-        if is_new:
-            f.write("time,signal,price,tp,sl,lot\n")
-        f.write(f"{now:%Y-%m-%d %H:%M},{final},{price:.2f},{tp:.2f},{sl:.2f},{lot}\n")
-    return os.path.exists("paused.txt") and open("paused.txt").read().strip() == "true"
-
-
-def is_low_liquidity(now):
-    # ตลาดทองเบาบางช่วง 00:00-07:00 UTC (หลังนิวยอร์กปิด ก่อนลอนดอนเปิด)
-    return now.hour < 7
 
 
 def dxy_direction():
@@ -184,7 +144,41 @@ def dxy_direction():
         return result
     except Exception:
         save_cache(DXY_CACHE, "NONE")
-        return None  # เช็คไม่ได้ ข้ามฟิลเตอร์นี้ไป
+        return None
+
+
+def is_paused():
+    return os.path.exists("paused.txt") and open("paused.txt").read().strip() == "true"
+
+
+def is_low_liquidity(now):
+    return now.hour < 7
+
+
+def calc_lot(entry, sl):
+    risk_dollar = ACCOUNT_BALANCE * (RISK_PERCENT / 100)
+    distance = abs(entry - sl)
+    if distance == 0:
+        return 0
+    return round(risk_dollar / (distance * 100), 2)
+
+
+def log_signal(now, final, price, tp, sl, lot):
+    is_new = not os.path.exists(LOG_FILE)
+    with open(LOG_FILE, "a") as f:
+        if is_new:
+            f.write("time,signal,price,tp,sl,lot\n")
+        f.write(f"{now:%Y-%m-%d %H:%M},{final},{price:.2f},{tp:.2f},{sl:.2f},{lot}\n")
+
+
+def load_last():
+    if os.path.exists(STATE_FILE):
+        return open(STATE_FILE).read().strip()
+    return ""
+
+
+def save_last(sig):
+    open(STATE_FILE, "w").write(sig)
 
 
 def main():
@@ -193,31 +187,36 @@ def main():
 
     now = dt.datetime.utcnow()
     if is_low_liquidity(now):
-        return  # ข้าม ช่วง volume ต่ำ ไม่ส่ง signal
+        return
 
-    tfs = {"15m": "15min", "30m": "30min", "1h": "1h", "4h": "4h", "1d": "1day"}
-    tf_signals, price, a = {}, 0, 0
-    for label, interval in tfs.items():
-        sig, p, atr_val = tech_signal(interval)
-        tf_signals[label] = sig
-        if label == "1h":
-            price, a = p, atr_val
+    sig15, price, a, k15 = tf_signal("15min")
+    sig30, _, _, k30 = tf_signal("30min")
+    sig1h, _, _, k1h = tf_signal("1h")
 
-    news = news_signal()
-    final = combine(tf_signals, news)
+    final = "WAIT"
+    if sig15 == "BUY_CONFIRMED" and sig30 in ("BUY_CONFIRMED", "BUY_STARTING"):
+        final = "BUY"
+    elif sig15 == "SELL_CONFIRMED" and sig30 in ("SELL_CONFIRMED", "SELL_STARTING"):
+        final = "SELL"
+
+    # 1h ใช้เตือนถ้าสวนทางรุนแรง ไม่บังคับบล็อก แค่ลดความมั่นใจ
+    warn_1h = ""
+    if final == "BUY" and sig1h == "SELL_CONFIRMED":
+        warn_1h = "⚠️ 1h กำลังหักลงสวนทาง ระวัง"
+    elif final == "SELL" and sig1h == "BUY_CONFIRMED":
+        warn_1h = "⚠️ 1h กำลังหักขึ้นสวนทาง ระวัง"
 
     dxy = dxy_direction()
     if dxy:
-        # ทองกับ dollar ปกติสวนทางกัน ถ้าวิ่งทิศเดียวกัน = สัญญาณไม่น่าเชื่อ ลดเป็น WAIT
         if final == "BUY" and dxy == "UP":
             final = "WAIT"
         elif final == "SELL" and dxy == "DOWN":
             final = "WAIT"
 
+    news = news_signal()
     last = load_last()
 
     if final != last:
-        lines = " | ".join(f"{k}:{v}" for k, v in tf_signals.items())
         tp_sl, lot = "", 0
         if final == "BUY":
             tp, sl = price + a * 2, price - a * 1.5
@@ -232,8 +231,9 @@ def main():
             f"🟡 XAU/USD | {final}\n"
             f"ราคา: {price:.2f}\n"
             f"{tp_sl}\n"
-            f"Tech: {lines}\n"
+            f"Stoch K: 15m={k15:.1f} 30m={k30:.1f} 1h={k1h:.1f}\n"
             f"News: {news}\n"
+            f"{warn_1h}\n"
             f"เวลา: {now:%Y-%m-%d %H:%M} UTC\n"
             f"⚠️ ไม่การันตีผล ใช้ควบคู่การจัดการความเสี่ยงเอง"
         )
