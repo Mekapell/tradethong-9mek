@@ -1,0 +1,23 @@
+name: weekly-summary
+
+on:
+  schedule:
+    - cron: "0 0 * * 0"   # ทุกวันอาทิตย์ เที่ยงคืน UTC
+  workflow_dispatch:
+
+jobs:
+  run:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - run: pip install -r requirements.txt
+
+      - run: python weekly_summary.py
+        env:
+          LINE_TOKEN: ${{ secrets.LINE_TOKEN }}
+          LINE_TO: ${{ secrets.LINE_TO }}
