@@ -31,8 +31,7 @@ jobs:
           LINE_TO: ${{ secrets.LINE_TO }}
           TWELVEDATA_KEY: ${{ secrets.TWELVEDATA_KEY }}
           FINNHUB_KEY: ${{ secrets.FINNHUB_KEY }}
-          ACCOUNT_BALANCE: ${{ secrets.ACCOUNT_BALANCE }}
-          RISK_PERCENT: ${{ secrets.RISK_PERCENT }}
+     
           FORCE_REPORT: ${{ github.event.inputs.force }}
 
       - name: save state
