@@ -290,11 +290,11 @@ def main():
 
     tp_sl, lot = "", 0
     if final == "BUY":
-        tp, sl = price + a * 2, price - a * 1.5
+        tp, sl = price + a * 0.8, price - a * 0.5
         lot = calc_lot(price, sl)
         tp_sl = f"TP: {tp:.2f} | SL: {sl:.2f} | Lot: {lot} (risk {RISK_PERCENT}% ของ ${ACCOUNT_BALANCE:.0f})"
     elif final == "SELL":
-        tp, sl = price - a * 2, price + a * 1.5
+        tp, sl = price - a * 0.8, price + a * 0.5
         lot = calc_lot(price, sl)
         tp_sl = f"TP: {tp:.2f} | SL: {sl:.2f} | Lot: {lot} (risk {RISK_PERCENT}% ของ ${ACCOUNT_BALANCE:.0f})"
 
