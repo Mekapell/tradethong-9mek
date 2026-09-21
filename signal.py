@@ -11,7 +11,8 @@ LOG_FILE        = "signal_log.csv"
 NEWS_CACHE      = "news_cache.json"
 DXY_CACHE       = "dxy_cache.json"
 CACHE_MINUTES   = 60
-SHARP_THRESHOLD = 15  # ขนาดการกลับตัวขั้นต่ำ (0-100 scale) ถึงจะนับว่า "แหลม"
+SHARP_THRESHOLD = 15
+LEVEL_TOLERANCE = 0.0015  # 0.15% ถือว่าเป็นระดับเดียวกัน
 
 NEG_WORDS = ["war", "conflict", "crisis", "rate hike", "inflation surge", "recession",
              "sanction", "hawkish", "strong dollar", "yields rise", "geopolitical tension"]
@@ -28,7 +29,7 @@ def push_line(text):
     )
 
 
-def get_series(interval, size=100):
+def get_series(interval, size=150):
     r = requests.get(
         "https://api.twelvedata.com/time_series",
         params={"symbol": "XAU/USD", "interval": interval, "outputsize": size, "apikey": TWELVE_KEY},
@@ -45,42 +46,60 @@ def sma(vals, n):
     return [sum(vals[i - n + 1:i + 1]) / n for i in range(n - 1, len(vals))]
 
 
+def ema_series(vals, n):
+    k = 2 / (n + 1)
+    out = [vals[0]]
+    for v in vals[1:]:
+        out.append(v * k + out[-1] * (1 - k))
+    return out
+
+
 def stochastic(closes, highs, lows, period=5, smooth_k=3, smooth_d=3):
     raw_k = []
     for i in range(period - 1, len(closes)):
-        window_high = max(highs[i - period + 1:i + 1])
-        window_low = min(lows[i - period + 1:i + 1])
-        if window_high == window_low:
-            raw_k.append(50)
-        else:
-            raw_k.append((closes[i] - window_low) / (window_high - window_low) * 100)
+        wh = max(highs[i - period + 1:i + 1])
+        wl = min(lows[i - period + 1:i + 1])
+        raw_k.append(50 if wh == wl else (closes[i] - wl) / (wh - wl) * 100)
     slow_k = sma(raw_k, smooth_k)
     d = sma(slow_k, smooth_d)
-    # ตัด slow_k ให้ยาวเท่า d เพื่อจับคู่ index ท้ายๆตรงกัน
     slow_k = slow_k[-len(d):]
     return slow_k, d
 
 
-def detect_turn(k, d):
-    if len(k) < 3 or len(d) < 2:
-        return "WAIT"
-
+def is_sharp_turn(k):
+    if len(k) < 3:
+        return None
     diff1 = k[-2] - k[-3]
     diff2 = k[-1] - k[-2]
-
-    # จุดหักแหลมจริง (V-shape แรงพอทั้ง 2 ข้าง)
     if diff1 < 0 and diff2 > 0 and abs(diff1) >= SHARP_THRESHOLD and abs(diff2) >= SHARP_THRESHOLD:
-        return "BUY_CONFIRMED" if d[-1] > d[-2] else "BUY_STARTING"
+        return "UP"
     if diff1 > 0 and diff2 < 0 and abs(diff1) >= SHARP_THRESHOLD and abs(diff2) >= SHARP_THRESHOLD:
-        return "SELL_CONFIRMED" if d[-1] < d[-2] else "SELL_STARTING"
+        return "DOWN"
+    return None
 
-    # เริ่มหัก แต่ยังไม่แหลมพอ
-    if diff1 <= 0 and diff2 > 0:
-        return "BUY_STARTING"
-    if diff1 >= 0 and diff2 < 0:
-        return "SELL_STARTING"
 
-    return "WAIT"
+def cross_state(k, d):
+    gap_prev = k[-2] - d[-2]
+    gap_now = k[-1] - d[-1]
+    if gap_prev <= 0 and gap_now > 0:
+        return "CROSSED_UP"
+    if gap_prev >= 0 and gap_now < 0:
+        return "CROSSED_DOWN"
+    if gap_now < 0 and abs(gap_now) < abs(gap_prev):
+        return "APPROACHING_UP"
+    if gap_now > 0 and abs(gap_now) < abs(gap_prev):
+        return "APPROACHING_DOWN"
+    return "NONE"
+
+
+def cross_label(state):
+    return {
+        "CROSSED_UP": "ตัดขึ้นแล้ว ✅",
+        "CROSSED_DOWN": "ตัดลงแล้ว ✅",
+        "APPROACHING_UP": "ใกล้จะตัดขึ้น ⏳",
+        "APPROACHING_DOWN": "ใกล้จะตัดลง ⏳",
+        "NONE": "ยังไม่ตัด",
+    }.get(state, "ยังไม่ตัด")
 
 
 def atr(highs, lows, closes, n=14):
@@ -91,11 +110,56 @@ def atr(highs, lows, closes, n=14):
     return sum(trs) / n
 
 
-def tf_signal(interval):
+def tf_data(interval):
     closes, highs, lows = get_series(interval, 100)
     k, d = stochastic(closes, highs, lows)
-    turn = detect_turn(k, d)
-    return turn, closes[-1], atr(highs, lows, closes), k[-1]
+    return {
+        "closes": closes, "highs": highs, "lows": lows,
+        "k": k, "d": d,
+        "sharp": is_sharp_turn(k),
+        "cross": cross_state(k, d),
+        "price": closes[-1],
+        "atr": atr(highs, lows, closes),
+    }
+
+
+def find_levels(prices, current_price, tolerance=LEVEL_TOLERANCE):
+    # นับจุดที่ราคาแตะซ้ำใกล้เคียงกัน = ระดับสำคัญ ยิ่งแตะบ่อย = แข็งแรง
+    clusters = []
+    for p in prices:
+        placed = False
+        for c in clusters:
+            if abs(p - c["level"]) / c["level"] <= tolerance:
+                c["touches"] += 1
+                c["level"] = (c["level"] * (c["touches"] - 1) + p) / c["touches"]
+                placed = True
+                break
+        if not placed:
+            clusters.append({"level": p, "touches": 1})
+
+    resistances = sorted([c for c in clusters if c["level"] > current_price], key=lambda c: c["level"])
+    supports = sorted([c for c in clusters if c["level"] < current_price], key=lambda c: -c["level"])
+
+    res = resistances[0] if resistances else None
+    sup = supports[0] if supports else None
+    return res, sup
+
+
+def strength_label(touches):
+    return "แข็งแรง 💪" if touches >= 3 else "ไม่แข็งแรง (แตะน้อย)"
+
+
+def market_trend():
+    closes, _, _ = get_series("4h", 250)
+    ema50 = ema_series(closes, 50)
+    ema200 = ema_series(closes, 200) if len(closes) >= 200 else None
+    if ema200 is None:
+        return "ข้อมูลไม่พอเช็คเทรนด์ 4h"
+    if ema50[-1] > ema200[-1]:
+        return "เทรนด์ใหญ่ (4h): ขึ้น 📈"
+    if ema50[-1] < ema200[-1]:
+        return "เทรนด์ใหญ่ (4h): ลง 📉"
+    return "เทรนด์ใหญ่ (4h): Sideways"
 
 
 def load_cache(path):
@@ -184,27 +248,19 @@ def save_last(sig):
 def main():
     if is_paused():
         return
-
     now = dt.datetime.utcnow()
     if is_low_liquidity(now):
         return
 
-    sig15, price, a, k15 = tf_signal("15min")
-    sig30, _, _, k30 = tf_signal("30min")
-    sig1h, _, _, k1h = tf_signal("1h")
+    tf15 = tf_data("15min")
+    tf30 = tf_data("30min")
+    tf1h = tf_data("1h")
 
     final = "WAIT"
-    if sig15 == "BUY_CONFIRMED" and sig30 in ("BUY_CONFIRMED", "BUY_STARTING"):
+    if tf15["sharp"] == "UP" and tf15["cross"] == "CROSSED_UP" and tf30["cross"] in ("CROSSED_UP", "APPROACHING_UP"):
         final = "BUY"
-    elif sig15 == "SELL_CONFIRMED" and sig30 in ("SELL_CONFIRMED", "SELL_STARTING"):
+    elif tf15["sharp"] == "DOWN" and tf15["cross"] == "CROSSED_DOWN" and tf30["cross"] in ("CROSSED_DOWN", "APPROACHING_DOWN"):
         final = "SELL"
-
-    # 1h ใช้เตือนถ้าสวนทางรุนแรง ไม่บังคับบล็อก แค่ลดความมั่นใจ
-    warn_1h = ""
-    if final == "BUY" and sig1h == "SELL_CONFIRMED":
-        warn_1h = "⚠️ 1h กำลังหักลงสวนทาง ระวัง"
-    elif final == "SELL" and sig1h == "BUY_CONFIRMED":
-        warn_1h = "⚠️ 1h กำลังหักขึ้นสวนทาง ระวัง"
 
     dxy = dxy_direction()
     if dxy:
@@ -213,33 +269,51 @@ def main():
         elif final == "SELL" and dxy == "DOWN":
             final = "WAIT"
 
-    news = news_signal()
     last = load_last()
+    if final == last:
+        return
 
-    if final != last:
-        tp_sl, lot = "", 0
-        if final == "BUY":
-            tp, sl = price + a * 2, price - a * 1.5
-            lot = calc_lot(price, sl)
-            tp_sl = f"TP: {tp:.2f} | SL: {sl:.2f} | Lot: {lot} (risk {RISK_PERCENT}% ของ ${ACCOUNT_BALANCE:.0f})"
-        elif final == "SELL":
-            tp, sl = price - a * 2, price + a * 1.5
-            lot = calc_lot(price, sl)
-            tp_sl = f"TP: {tp:.2f} | SL: {sl:.2f} | Lot: {lot} (risk {RISK_PERCENT}% ของ ${ACCOUNT_BALANCE:.0f})"
+    price = tf15["price"]
+    a = tf15["atr"]
+    news = news_signal()
 
-        push_line(
-            f"🟡 XAU/USD | {final}\n"
-            f"ราคา: {price:.2f}\n"
-            f"{tp_sl}\n"
-            f"Stoch K: 15m={k15:.1f} 30m={k30:.1f} 1h={k1h:.1f}\n"
-            f"News: {news}\n"
-            f"{warn_1h}\n"
-            f"เวลา: {now:%Y-%m-%d %H:%M} UTC\n"
-            f"⚠️ ไม่การันตีผล ใช้ควบคู่การจัดการความเสี่ยงเอง"
-        )
-        save_last(final)
-        if final in ("BUY", "SELL"):
-            log_signal(now, final, price, tp, sl, lot)
+    # แนวรับ-แนวต้าน จาก swing high/low ของ 4h ย้อนหลัง
+    closes4h, highs4h, lows4h = get_series("4h", 150)
+    res, sup = find_levels(highs4h + lows4h, price)
+    trend = market_trend()
+
+    level_text = ""
+    if res:
+        level_text += f"แนวต้าน: {res['level']:.2f} ({strength_label(res['touches'])}, แตะ {res['touches']} ครั้ง)\n"
+    if sup:
+        level_text += f"แนวรับ: {sup['level']:.2f} ({strength_label(sup['touches'])}, แตะ {sup['touches']} ครั้ง)\n"
+
+    tp_sl, lot = "", 0
+    if final == "BUY":
+        tp, sl = price + a * 2, price - a * 1.5
+        lot = calc_lot(price, sl)
+        tp_sl = f"TP: {tp:.2f} | SL: {sl:.2f} | Lot: {lot} (risk {RISK_PERCENT}% ของ ${ACCOUNT_BALANCE:.0f})"
+    elif final == "SELL":
+        tp, sl = price - a * 2, price + a * 1.5
+        lot = calc_lot(price, sl)
+        tp_sl = f"TP: {tp:.2f} | SL: {sl:.2f} | Lot: {lot} (risk {RISK_PERCENT}% ของ ${ACCOUNT_BALANCE:.0f})"
+
+    push_line(
+        f"🟡 XAU/USD | {final}\n"
+        f"ราคา: {price:.2f}\n"
+        f"{tp_sl}\n\n"
+        f"15m: {cross_label(tf15['cross'])}\n"
+        f"30m: {cross_label(tf30['cross'])}\n"
+        f"1h: {cross_label(tf1h['cross'])}\n\n"
+        f"{level_text}"
+        f"{trend}\n"
+        f"News: {news}\n"
+        f"เวลา: {now:%Y-%m-%d %H:%M} UTC\n"
+        f"⚠️ ไม่การันตีผล ใช้ควบคู่การจัดการความเสี่ยงเอง"
+    )
+    save_last(final)
+    if final in ("BUY", "SELL"):
+        log_signal(now, final, price, tp, sl, lot)
 
 
 if __name__ == "__main__":
