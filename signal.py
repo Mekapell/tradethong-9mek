@@ -322,9 +322,9 @@ def main():
     save_status_snapshot(now, tf15, tf30, tf1h, tf4h, dxy_early, news_early)
 
     final = "WAIT"
-    if tf15["sharp"] == "UP" and tf15["cross"] == "CROSSED_UP" and tf30["cross"] in ("CROSSED_UP", "APPROACHING_UP"):
+    if tf30["cross"] == "CROSSED_UP" and tf15["cross"] in ("CROSSED_UP", "APPROACHING_UP"):
         final = "BUY"
-    elif tf15["sharp"] == "DOWN" and tf15["cross"] == "CROSSED_DOWN" and tf30["cross"] in ("CROSSED_DOWN", "APPROACHING_DOWN"):
+    elif tf30["cross"] == "CROSSED_DOWN" and tf15["cross"] in ("CROSSED_DOWN", "APPROACHING_DOWN"):
         final = "SELL"
 
     dxy = dxy_early
@@ -339,17 +339,17 @@ def main():
     if final == last and not force:
         return
 
-    price = tf15["price"]
+    price = tf30["price"]
 
     if final == last and force:
         # แค่เช็คสถานะ ยังไม่เข้าเงื่อนไขจริง ส่งกลับเฉพาะคนที่สั่งเช็ค
-        direction, pct = confidence_and_direction(tf15, tf30, dxy)
+        direction, pct = confidence_and_direction(tf30, tf15, dxy)
         msg = (
             f"🔍 เช็คสถานะ XAU/USD (ยังไม่ใช่สัญญาณเข้า)\n"
             f"ราคา: {price:.2f}\n\n"
-            f"15m: {cross_label(tf15['cross'])}\n"
-            f"30m: {cross_label(tf30['cross'])}\n"
-            f"1h: {cross_label(tf1h['cross'])}\n\n"
+            f"30m (หลัก): {cross_label(tf30['cross'])}\n"
+            f"15m (รอง): {cross_label(tf15['cross'])}\n"
+            f"1h (ประกอบ): {cross_label(tf1h['cross'])}\n\n"
             f"แนวโน้มถ้าจะเข้า: {direction} (ความพร้อม ~{pct}%)\n"
             f"เวลา: {now:%Y-%m-%d %H:%M} UTC"
         )
@@ -359,7 +359,7 @@ def main():
             push_to_all_active(msg)
         return
 
-    a = tf15["atr"]
+    a = tf30["atr"]
     news = news_signal()
 
     # แนวรับ-แนวต้าน จาก swing high/low ของ 4h ย้อนหลัง
@@ -373,23 +373,35 @@ def main():
     if sup:
         level_text += f"แนวรับ: {sup['level']:.2f} ({strength_label(sup['touches'])}, แตะ {sup['touches']} ครั้ง)\n"
 
+    buffer = a * 0.3  # เผื่อราคาแกว่งเลยแนวไปเคลียร์ liquidity ก่อนกลับตัว
+
     tp_sl, lot = "", 0
     if final == "BUY":
-        tp, sl = price + a * 0.8, price - a * 0.5
+        sl = (sup["level"] - buffer) if sup else price - a * 0.5
+        tp = res["level"] if res else price + a * 0.8
         lot = calc_lot(price, sl)
-        tp_sl = f"TP: {tp:.2f} | SL: {sl:.2f} | Lot: {lot} (risk {RISK_PERCENT}% ของ ${ACCOUNT_BALANCE:.0f})"
+        tp_sl = (
+            f"TP: {tp:.2f} (แนวต้าน){' ' + strength_label(res['touches']) if res else ''}\n"
+            f"SL: {sl:.2f} (ใต้แนวรับ กันโดนล่า)\n"
+            f"Lot: {lot} (risk {RISK_PERCENT}% ของ ${ACCOUNT_BALANCE:.0f})"
+        )
     elif final == "SELL":
-        tp, sl = price - a * 0.8, price + a * 0.5
+        sl = (res["level"] + buffer) if res else price + a * 0.5
+        tp = sup["level"] if sup else price - a * 0.8
         lot = calc_lot(price, sl)
-        tp_sl = f"TP: {tp:.2f} | SL: {sl:.2f} | Lot: {lot} (risk {RISK_PERCENT}% ของ ${ACCOUNT_BALANCE:.0f})"
+        tp_sl = (
+            f"TP: {tp:.2f} (แนวรับ){' ' + strength_label(sup['touches']) if sup else ''}\n"
+            f"SL: {sl:.2f} (เหนือแนวต้าน กันโดนล่า)\n"
+            f"Lot: {lot} (risk {RISK_PERCENT}% ของ ${ACCOUNT_BALANCE:.0f})"
+        )
 
     push_to_all_active(
         f"🟡 XAU/USD | {final}\n"
         f"ราคา: {price:.2f}\n"
         f"{tp_sl}\n\n"
-        f"15m: {cross_label(tf15['cross'])}\n"
-        f"30m: {cross_label(tf30['cross'])}\n"
-        f"1h: {cross_label(tf1h['cross'])}\n\n"
+        f"30m (หลัก): {cross_label(tf30['cross'])}\n"
+        f"15m (รอง): {cross_label(tf15['cross'])}\n"
+        f"1h (ประกอบ): {cross_label(tf1h['cross'])}\n\n"
         f"{level_text}"
         f"{trend}\n"
         f"News: {news}\n"
