@@ -21,12 +21,15 @@ POS_WORDS = ["rate cut", "stimulus", "safe haven", "dovish", "ceasefire", "easin
 
 
 def push_line(text):
-    requests.post(
-        "https://api.line.me/v2/bot/message/push",
+    r = requests.post(
+        "https://api.line.me/v2/bot/message/broadcast",
         headers={"Authorization": f"Bearer {LINE_TOKEN}", "Content-Type": "application/json"},
-        json={"to": LINE_TO, "messages": [{"type": "text", "text": text}]},
+        json={"messages": [{"type": "text", "text": text}]},
         timeout=10,
     )
+    print(f"LINE broadcast status: {r.status_code} | body: {r.text[:300]}")
+    if r.status_code != 200:
+        raise Exception(f"LINE broadcast failed {r.status_code}: {r.text[:300]}")
 
 
 def get_series(interval, size=150):
