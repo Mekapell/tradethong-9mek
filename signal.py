@@ -276,6 +276,20 @@ def confidence_and_direction(tf15, tf30, dxy):
     return "SELL", round(down / total * 100)
 
 
+def save_status_snapshot(now, tf15, tf30, tf1h, tf4h, dxy, news):
+    snapshot = {
+        "time": f"{now:%Y-%m-%d %H:%M} UTC",
+        "price": tf15["price"],
+        "15m": {"k": round(tf15["k"][-1], 1), "d": round(tf15["d"][-1], 1), "cross": tf15["cross"]},
+        "30m": {"k": round(tf30["k"][-1], 1), "d": round(tf30["d"][-1], 1), "cross": tf30["cross"]},
+        "1h": {"k": round(tf1h["k"][-1], 1), "d": round(tf1h["d"][-1], 1), "cross": tf1h["cross"]},
+        "4h": {"k": round(tf4h["k"][-1], 1), "d": round(tf4h["d"][-1], 1), "cross": tf4h["cross"]},
+        "dxy": dxy,
+        "news": news,
+    }
+    json.dump(snapshot, open("status.json", "w"), ensure_ascii=False)
+
+
 def main():
     force = os.environ.get("FORCE_REPORT", "false").lower() == "true"
 
@@ -288,6 +302,11 @@ def main():
     tf15 = tf_data("15min")
     tf30 = tf_data("30min")
     tf1h = tf_data("1h")
+    tf4h = tf_data("4h")
+
+    dxy_early = dxy_direction()
+    news_early = news_signal()
+    save_status_snapshot(now, tf15, tf30, tf1h, tf4h, dxy_early, news_early)
 
     final = "WAIT"
     if tf15["sharp"] == "UP" and tf15["cross"] == "CROSSED_UP" and tf30["cross"] in ("CROSSED_UP", "APPROACHING_UP"):
@@ -295,7 +314,7 @@ def main():
     elif tf15["sharp"] == "DOWN" and tf15["cross"] == "CROSSED_DOWN" and tf30["cross"] in ("CROSSED_DOWN", "APPROACHING_DOWN"):
         final = "SELL"
 
-    dxy = dxy_direction()
+    dxy = dxy_early
     if dxy:
         if final == "BUY" and dxy == "UP":
             final = "WAIT"
