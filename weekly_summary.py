@@ -7,9 +7,9 @@ LOG_FILE   = "signal_log.csv"
 
 def push_line(text):
     requests.post(
-        "https://api.line.me/v2/bot/message/push",
+        "https://api.line.me/v2/bot/message/broadcast",
         headers={"Authorization": f"Bearer {LINE_TOKEN}", "Content-Type": "application/json"},
-        json={"to": LINE_TO, "messages": [{"type": "text", "text": text}]},
+        json={"messages": [{"type": "text", "text": text}]},
         timeout=10,
     )
 
