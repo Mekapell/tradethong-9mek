@@ -1,7 +1,6 @@
 import os, json, requests, datetime as dt
 
 LINE_TOKEN      = os.environ["LINE_TOKEN"]
-LINE_TO         = os.environ["LINE_TO"]
 TWELVE_KEY      = os.environ["TWELVEDATA_KEY"]
 FINNHUB_KEY     = os.environ["FINNHUB_KEY"]
 ACCOUNT_BALANCE = float(os.environ.get("ACCOUNT_BALANCE", "1000"))
@@ -20,16 +19,31 @@ POS_WORDS = ["rate cut", "stimulus", "safe haven", "dovish", "ceasefire", "easin
              "weak dollar", "yields fall", "fed pause", "de-escalation"]
 
 
-def push_line(text):
+def push_to(user_id, text):
     r = requests.post(
-        "https://api.line.me/v2/bot/message/broadcast",
+        "https://api.line.me/v2/bot/message/push",
         headers={"Authorization": f"Bearer {LINE_TOKEN}", "Content-Type": "application/json"},
-        json={"messages": [{"type": "text", "text": text}]},
+        json={"to": user_id, "messages": [{"type": "text", "text": text}]},
         timeout=10,
     )
-    print(f"LINE broadcast status: {r.status_code} | body: {r.text[:300]}")
-    if r.status_code != 200:
-        raise Exception(f"LINE broadcast failed {r.status_code}: {r.text[:300]}")
+    print(f"LINE push to {user_id[:6]}...: {r.status_code}")
+    return r.status_code == 200
+
+
+def load_users():
+    if not os.path.exists("users.json"):
+        return {}
+    return json.load(open("users.json"))
+
+
+def push_to_all_active(text):
+    users = load_users()
+    for uid, info in users.items():
+        try:
+            if not info.get("paused", False):
+                push_to(uid, text)
+        except Exception as e:
+            print(f"skip {uid}: {e}")
 
 
 def get_series(interval, size=150):
@@ -292,9 +306,8 @@ def save_status_snapshot(now, tf15, tf30, tf1h, tf4h, dxy, news):
 
 def main():
     force = os.environ.get("FORCE_REPORT", "false").lower() == "true"
+    target_user = os.environ.get("TARGET_USER", "").strip()
 
-    if is_paused():
-        return
     now = dt.datetime.utcnow()
     if is_low_liquidity(now) and not force:
         return
@@ -329,9 +342,9 @@ def main():
     price = tf15["price"]
 
     if final == last and force:
-        # แค่เช็คสถานะ ยังไม่เข้าเงื่อนไขจริง แต่ต้องตอบให้เห็นว่าตัดยัง/ใกล้แค่ไหน
+        # แค่เช็คสถานะ ยังไม่เข้าเงื่อนไขจริง ส่งกลับเฉพาะคนที่สั่งเช็ค
         direction, pct = confidence_and_direction(tf15, tf30, dxy)
-        push_line(
+        msg = (
             f"🔍 เช็คสถานะ XAU/USD (ยังไม่ใช่สัญญาณเข้า)\n"
             f"ราคา: {price:.2f}\n\n"
             f"15m: {cross_label(tf15['cross'])}\n"
@@ -340,6 +353,10 @@ def main():
             f"แนวโน้มถ้าจะเข้า: {direction} (ความพร้อม ~{pct}%)\n"
             f"เวลา: {now:%Y-%m-%d %H:%M} UTC"
         )
+        if target_user:
+            push_to(target_user, msg)
+        else:
+            push_to_all_active(msg)
         return
 
     a = tf15["atr"]
@@ -366,7 +383,7 @@ def main():
         lot = calc_lot(price, sl)
         tp_sl = f"TP: {tp:.2f} | SL: {sl:.2f} | Lot: {lot} (risk {RISK_PERCENT}% ของ ${ACCOUNT_BALANCE:.0f})"
 
-    push_line(
+    push_to_all_active(
         f"🟡 XAU/USD | {final}\n"
         f"ราคา: {price:.2f}\n"
         f"{tp_sl}\n\n"
@@ -388,5 +405,5 @@ if __name__ == "__main__":
     try:
         main()
     except Exception as e:
-        push_line(f"🛑 SYSTEM ERROR\n{type(e).__name__}: {e}\nเวลา: {dt.datetime.utcnow():%Y-%m-%d %H:%M} UTC")
+        print(f"🛑 SYSTEM ERROR: {type(e).__name__}: {e}")
         raise
