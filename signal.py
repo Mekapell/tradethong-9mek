@@ -245,11 +245,41 @@ def save_last(sig):
     open(STATE_FILE, "w").write(sig)
 
 
+def confidence_and_direction(tf15, tf30, dxy):
+    up, down, total = 0, 0, 4
+    if tf15["sharp"] == "UP":
+        up += 1
+    if tf15["sharp"] == "DOWN":
+        down += 1
+    if tf15["cross"] == "CROSSED_UP":
+        up += 1
+    elif tf15["cross"] == "APPROACHING_UP":
+        up += 0.5
+    if tf15["cross"] == "CROSSED_DOWN":
+        down += 1
+    elif tf15["cross"] == "APPROACHING_DOWN":
+        down += 0.5
+    if tf30["cross"] in ("CROSSED_UP", "APPROACHING_UP"):
+        up += 1
+    if tf30["cross"] in ("CROSSED_DOWN", "APPROACHING_DOWN"):
+        down += 1
+    if dxy == "DOWN":
+        up += 1
+    if dxy == "UP":
+        down += 1
+
+    if up >= down:
+        return "BUY", round(up / total * 100)
+    return "SELL", round(down / total * 100)
+
+
 def main():
+    force = os.environ.get("FORCE_REPORT", "false").lower() == "true"
+
     if is_paused():
         return
     now = dt.datetime.utcnow()
-    if is_low_liquidity(now):
+    if is_low_liquidity(now) and not force:
         return
 
     tf15 = tf_data("15min")
@@ -270,10 +300,26 @@ def main():
             final = "WAIT"
 
     last = load_last()
-    if final == last:
+
+    if final == last and not force:
         return
 
     price = tf15["price"]
+
+    if final == last and force:
+        # แค่เช็คสถานะ ยังไม่เข้าเงื่อนไขจริง แต่ต้องตอบให้เห็นว่าตัดยัง/ใกล้แค่ไหน
+        direction, pct = confidence_and_direction(tf15, tf30, dxy)
+        push_line(
+            f"🔍 เช็คสถานะ XAU/USD (ยังไม่ใช่สัญญาณเข้า)\n"
+            f"ราคา: {price:.2f}\n\n"
+            f"15m: {cross_label(tf15['cross'])}\n"
+            f"30m: {cross_label(tf30['cross'])}\n"
+            f"1h: {cross_label(tf1h['cross'])}\n\n"
+            f"แนวโน้มถ้าจะเข้า: {direction} (ความพร้อม ~{pct}%)\n"
+            f"เวลา: {now:%Y-%m-%d %H:%M} UTC"
+        )
+        return
+
     a = tf15["atr"]
     news = news_signal()
 
