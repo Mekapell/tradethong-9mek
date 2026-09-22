@@ -1,4 +1,4 @@
-import os, json, requests, datetime as dt
+import os, json, csv, requests, datetime as dt
 
 LINE_TOKEN      = os.environ["LINE_TOKEN"]
 TWELVE_KEY      = os.environ["TWELVEDATA_KEY"]
@@ -290,7 +290,18 @@ def confidence_and_direction(tf15, tf30, dxy):
     return "SELL", round(down / total * 100)
 
 
-def save_status_snapshot(now, tf15, tf30, tf1h, tf4h, dxy, news):
+def get_recent_signals(n=5):
+    if not os.path.exists(LOG_FILE):
+        return []
+    rows = []
+    with open(LOG_FILE) as f:
+        reader = csv.DictReader(f)
+        for r in reader:
+            rows.append(r)
+    return rows[-n:]
+
+
+def save_status_snapshot(now, tf15, tf30, tf1h, tf4h, dxy, news, res, sup, trend, last_signal):
     snapshot = {
         "time": f"{now:%Y-%m-%d %H:%M} UTC",
         "price": tf15["price"],
@@ -300,6 +311,14 @@ def save_status_snapshot(now, tf15, tf30, tf1h, tf4h, dxy, news):
         "4h": {"k": round(tf4h["k"][-1], 1), "d": round(tf4h["d"][-1], 1), "cross": tf4h["cross"]},
         "dxy": dxy,
         "news": news,
+        "resistance": round(res["level"], 2) if res else None,
+        "resistance_touches": res["touches"] if res else None,
+        "support": round(sup["level"], 2) if sup else None,
+        "support_touches": sup["touches"] if sup else None,
+        "trend_4h": trend,
+        "last_signal_state": last_signal,
+        "recent_signals": get_recent_signals(5),
+        "strategy_note": "M30 เป็นตัวยืนยันหลัก, M15 เป็นตัวรอง, 1h ใช้ประกอบ. TP วางที่แนวรับ/ต้าน, SL วางเลยแนวไปกันโดนล่า",
     }
     json.dump(snapshot, open("status.json", "w"), ensure_ascii=False)
 
@@ -319,7 +338,13 @@ def main():
 
     dxy_early = dxy_direction()
     news_early = news_signal()
-    save_status_snapshot(now, tf15, tf30, tf1h, tf4h, dxy_early, news_early)
+
+    closes4h, highs4h, lows4h = get_series("4h", 150)
+    res, sup = find_levels(highs4h + lows4h, tf30["price"])
+    trend = market_trend()
+    last_signal_state = load_last()
+
+    save_status_snapshot(now, tf15, tf30, tf1h, tf4h, dxy_early, news_early, res, sup, trend, last_signal_state)
 
     final = "WAIT"
     if tf30["cross"] == "CROSSED_UP" and tf15["cross"] in ("CROSSED_UP", "APPROACHING_UP"):
@@ -362,10 +387,7 @@ def main():
     a = tf30["atr"]
     news = news_signal()
 
-    # แนวรับ-แนวต้าน จาก swing high/low ของ 4h ย้อนหลัง
-    closes4h, highs4h, lows4h = get_series("4h", 150)
-    res, sup = find_levels(highs4h + lows4h, price)
-    trend = market_trend()
+    # แนวรับ-แนวต้าน คำนวณไว้แล้วด้านบน (res, sup, trend)
 
     level_text = ""
     if res:
