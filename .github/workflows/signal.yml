@@ -9,6 +9,10 @@ on:
         description: "force status report"
         type: boolean
         default: false
+      user_id:
+        description: "LINE user id to reply to (leave blank for cron)"
+        type: string
+        default: ""
 
 permissions:
   contents: write
@@ -28,10 +32,10 @@ jobs:
       - run: python signal.py
         env:
           LINE_TOKEN: ${{ secrets.LINE_TOKEN }}
-          LINE_TO: ${{ secrets.LINE_TO }}
           TWELVEDATA_KEY: ${{ secrets.TWELVEDATA_KEY }}
           FINNHUB_KEY: ${{ secrets.FINNHUB_KEY }}
           FORCE_REPORT: ${{ github.event.inputs.force }}
+          TARGET_USER: ${{ github.event.inputs.user_id }}
 
       - name: save state
         run: |
